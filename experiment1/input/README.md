@@ -1,0 +1,1 @@
+Place your raw data here. This folder will be READ-ONLY inside the container.

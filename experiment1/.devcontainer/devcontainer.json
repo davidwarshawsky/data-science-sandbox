@@ -1,0 +1,22 @@
+{
+    "name": "Immutable Data Science Box",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "python.defaultInterpreterPath": "/workspace/.venv/bin/python"
+            },
+            "extensions": [
+                "ms-python.python"
+            ]
+        }
+    },
+    "mounts": [
+        "source=${localWorkspaceFolder}/input,target=/workspace/input,type=bind,consistency=cached,readonly",
+        "source=${localWorkspaceFolder}/output,target=/workspace/output,type=bind"
+    ],
+    "postCreateCommand": "bash .devcontainer/post-create.sh",
+    "remoteUser": "vscode"
+}

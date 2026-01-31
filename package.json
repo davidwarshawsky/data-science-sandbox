@@ -1,5 +1,6 @@
 {
   "name": "immutable-regulatory-sandbox",
+  "publisher": "antigravity",
   "displayName": "Immutable Regulatory Sandbox",
   "description": "Trust-minimized environment for reproducible data science experiments.",
   "version": "0.0.1",
@@ -9,7 +10,9 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -35,7 +38,7 @@
         {
           "id": "immutable-explorer",
           "title": "Immutable Sandbox",
-          "icon": "resources/lock.svg"
+          "icon": "resources/box-lock.svg"
         }
       ]
     },
@@ -47,7 +50,48 @@
           "name": "Dashboard"
         }
       ]
-    }
+    },
+    "walkthroughs": [
+      {
+        "id": "sandboxWalkthrough",
+        "title": "Mastering the Box",
+        "description": "Learn how to use the Immutable Regulatory Sandbox.",
+        "steps": [
+          {
+            "id": "create",
+            "title": "Create Sandbox",
+            "description": "Create your first protected environment.",
+            "media": {
+              "markdown": "walkthrough/1_create.md"
+            }
+          },
+          {
+            "id": "verify",
+            "title": "Verify Integrity",
+            "description": "Understand the security guarantees.",
+            "media": {
+              "markdown": "walkthrough/2_verify.md"
+            }
+          },
+          {
+            "id": "finalize",
+            "title": "Finalize & Prove",
+            "description": "Generate your cryptographic prompt.",
+            "media": {
+              "markdown": "walkthrough/3_finalize.md"
+            }
+          },
+          {
+            "id": "exit",
+            "title": "Pausing & Exiting",
+            "description": "How to verify, pause, or exit safely.",
+            "media": {
+              "markdown": "walkthrough/4_exit.md"
+            }
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

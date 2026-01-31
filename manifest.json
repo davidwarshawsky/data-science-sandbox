@@ -1,0 +1,7 @@
+{
+  "timestamp": "2026-01-31T22:19:58.806Z",
+  "input_hashes": {},
+  "output_hashes": {},
+  "system_info": "Docker Image ID would be here (requires docker socket access or env var)",
+  "pip_freeze": "To be implemented: read from .venv or internal shell trace"
+}

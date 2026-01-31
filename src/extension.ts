@@ -36,7 +36,7 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     let createSandboxDisposable = vscode.commands.registerCommand('immutable.createSandbox', async () => {
-        // 1. Ask user for target directory
+        // 1. Ask user for sandbox location
         const folderUri = await vscode.window.showOpenDialog({
             canSelectFiles: false,
             canSelectFolders: true,
@@ -51,14 +51,63 @@ export async function activate(context: vscode.ExtensionContext) {
         const projectPath = folderUri[0].fsPath;
         const projectName = path.basename(projectPath);
 
-        try {
-            // 2. Scaffold Directory Structure
-            await scaffoldProject(projectPath);
+        // 1b. Safety Checks:
+        // A. File system check (is this already an experiment?)
+        if (fs.existsSync(path.join(projectPath, 'output')) || fs.existsSync(path.join(projectPath, '.devcontainer'))) {
+            vscode.window.showErrorMessage(`Error: The folder '${projectName}' looks like an existing project (has 'output' or '.devcontainer'). Please select a clean folder.`);
+            return;
+        }
 
-            // 3. Register in DB
-            const id = crypto.randomUUID();
-            await db.insertExperiment(id, projectName, projectPath);
-            provider.refresh(); // Update UI
+        // B. Database Check (is this registered?)
+        const existingExp = await db.getExperimentByPath(projectPath);
+        if (existingExp) {
+            vscode.window.showErrorMessage(`Error: The folder '${projectName}' is already registered as an experiment in the database.`);
+            return;
+        }
+
+        // 2. Ask user for Input Source Data
+        const inputSourceUri = await vscode.window.showOpenDialog({
+            canSelectFiles: false,
+            canSelectFolders: true,
+            canSelectMany: false,
+            openLabel: 'Select Source Data Folder',
+            title: 'Select the folder containing your initial data (will be copied to input/)'
+        });
+
+        if (!inputSourceUri || inputSourceUri.length === 0) {
+            vscode.window.showWarningMessage("Sandbox creation cancelled: Input Source is required.");
+            return;
+        }
+        const inputSourcePath = inputSourceUri[0].fsPath;
+
+        try {
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: "Creating Immutable Sandbox...",
+                cancellable: false
+            }, async (progress) => {
+                progress.report({ message: "Scaffolding structure..." });
+                // 3. Scaffold Directory Structure & Copy Input
+                await scaffoldProject(projectPath, inputSourcePath);
+
+                // 4. Git Initialization
+                progress.report({ message: "Initializing Git Repository..." });
+                try {
+                    await exec('git init', { cwd: projectPath });
+                    await exec('git add .', { cwd: projectPath });
+                    await exec('git commit -m "Initial Sandbox Creation"', { cwd: projectPath });
+                } catch (gitErr) {
+                    console.error("Git init failed", gitErr);
+                    // Non-fatal, but warn
+                    vscode.window.showWarningMessage("Git initialization failed. Is git installed?");
+                }
+
+                // 5. Register in DB
+                progress.report({ message: "Registering experiment..." });
+                const id = crypto.randomUUID();
+                await db.insertExperiment(id, projectName, projectPath);
+                provider.refresh(); // Update UI
+            });
 
             vscode.window.showInformationMessage(`Immutable Sandbox created at ${projectPath}`);
 
@@ -173,7 +222,7 @@ export function deactivate() { }
 
 // --- Helper Functions ---
 
-async function scaffoldProject(rootPath: string) {
+async function scaffoldProject(rootPath: string, inputSourcePath: string) {
     // Define paths
     const inputDir = path.join(rootPath, 'input');
     const outputDir = path.join(rootPath, 'output');
@@ -185,12 +234,19 @@ async function scaffoldProject(rootPath: string) {
     await fs.ensureDir(outputDir);
     await fs.ensureDir(devContainerDir);
 
+    // Copy Input Data
+    if (inputSourcePath) {
+        await fs.copy(inputSourcePath, inputDir);
+    }
+
     // Create placeholder files
     if (!fs.existsSync(requirementsFile)) {
         await fs.writeFile(requirementsFile, '# Add your dependencies here\npandas\nnumpy\n');
     }
 
-    await fs.writeFile(path.join(inputDir, 'README.md'), 'Place your raw data here. This folder will be READ-ONLY inside the container.');
+    if (!fs.existsSync(path.join(inputDir, 'README.md'))) {
+        await fs.writeFile(path.join(inputDir, 'README.md'), 'Data in this folder is READ-ONLY inside the container.');
+    }
     await fs.writeFile(path.join(outputDir, 'README.md'), 'Write your results here. This is the only writeable directory for results.');
 
     // Create Dev Container Configs

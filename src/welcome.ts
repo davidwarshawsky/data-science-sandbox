@@ -52,6 +52,9 @@ export class WelcomePanel {
                     case 'createSandbox':
                         vscode.commands.executeCommand('immutable.createSandbox');
                         return;
+                    case 'openWalkthrough':
+                        vscode.commands.executeCommand('workbench.action.openWalkthrough', 'antigravity.immutable-regulatory-sandbox#sandboxWalkthrough');
+                        return;
                 }
             },
             null,
@@ -119,8 +122,9 @@ export class WelcomePanel {
                 <p>Welcome to your trust-minimized data science environment. This extension ensures that your work is reproducible, tamper-proof, and audit-ready.</p>
 
                 <button class="btn" onclick="createSandbox()">Create Your First Sandbox</button>
+                <button class="btn" onclick="openWalkthrough()" style="background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); margin-left: 10px;">Interactive Tutorial</button>
 
-                <h2>How it Works</h2>
+                <h2 id="tutorial-section">How it Works</h2>
                 
                 <div class="step">
                     <span class="step-title">1. The Box (Read-Only Input)</span>
@@ -163,6 +167,9 @@ export class WelcomePanel {
                     const vscode = acquireVsCodeApi();
                     function createSandbox() {
                         vscode.postMessage({ command: 'createSandbox' });
+                    }
+                    function openWalkthrough() {
+                        vscode.postMessage({ command: 'openWalkthrough' });
                     }
                 </script>
             </body>

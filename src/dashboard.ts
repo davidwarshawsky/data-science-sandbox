@@ -26,7 +26,7 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
         // Listen for messages from the UI
-        webviewView.webview.onDidReceiveMessage(data => {
+        webviewView.webview.onDidReceiveMessage(async data => {
             switch (data.type) {
                 case 'createSandbox':
                     vscode.commands.executeCommand('immutable.createSandbox');
@@ -36,8 +36,15 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'openFolder':
                     if (data.path) {
+                        // Update to IN_PROGRESS and Update Timestamp
+                        await this._db.updateExperimentStatus(data.path, 'IN_PROGRESS');
+                        await this._db.updateLastOpened(data.path);
+                        this.refresh(); // Update UI in background
                         vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(data.path));
                     }
+                    break;
+                case 'openWelcome':
+                    vscode.commands.executeCommand('immutable.showWelcome');
                     break;
             }
         });
@@ -73,7 +80,8 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
                 table { width: 100%; border-collapse: collapse; margin-top: 15px; }
                 th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--vscode-widget-border); }
                 th { color: var(--vscode-descriptionForeground); font-weight: 600; }
-                tr:hover { background-color: var(--vscode-list-hoverBackground); cursor: pointer; }
+                tr.row-clickable:hover { background-color: var(--vscode-list-hoverBackground); cursor: pointer; }
+                tr.row-locked { opacity: 0.6; cursor: not-allowed; background-color: var(--vscode-list-inactiveSelectionBackground); }
                 .btn { 
                     background-color: var(--vscode-button-background); 
                     color: var(--vscode-button-foreground); 
@@ -85,13 +93,17 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
                 }
                 .btn:hover { background-color: var(--vscode-button-hoverBackground); }
                 .status-created { color: var(--vscode-terminal-ansiYellow); }
-                .status-finalized { color: var(--vscode-terminal-ansiGreen); font-weight: bold; }
+                .status-inprogress { color: var(--vscode-terminal-ansiBlue); }
+                .status-completed { color: var(--vscode-terminal-ansiGreen); font-weight: bold; }
             </style>
         </head>
         <body>
             <div style="display: flex; justify-content: space-between; align-items: center;">
                 <h2>Experiment Registry</h2>
-                <button class="btn" id="createBtn">New Experiment</button>
+                <div>
+                   <button class="btn" id="helpBtn" style="margin-right: 5px; background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);">Help</button>
+                   <button class="btn" id="createBtn">New Experiment</button>
+                </div>
             </div>
             
             <table id="expTable">
@@ -99,8 +111,8 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
                     <tr>
                         <th>Name</th>
                         <th>Created</th>
+                        <th>Last Opened (UTC)</th>
                         <th>Status</th>
-                        <th>Path</th>
                     </tr>
                 </thead>
                 <tbody id="tableBody">
@@ -113,6 +125,10 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
                 
                 document.getElementById('createBtn').addEventListener('click', () => {
                     vscode.postMessage({ type: 'createSandbox' });
+                });
+
+                document.getElementById('helpBtn').addEventListener('click', () => {
+                    vscode.postMessage({ type: 'openWelcome' });
                 });
 
                 window.addEventListener('message', event => {
@@ -131,19 +147,37 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
                     experiments.forEach(exp => {
                         const row = document.createElement('tr');
                         
-                        const date = new Date(exp.created_at).toLocaleString();
-                        const statusClass = exp.status === 'FINALIZED' ? 'status-finalized' : 'status-created';
+                        const dateCreated = new Date(exp.created_at).toLocaleString();
+                        const dateOpened = exp.last_opened_at ? new Date(exp.last_opened_at).toUTCString().replace('GMT', '') : '-';
+                        
+                        let statusClass = 'status-created';
+                        if (exp.status === 'IN_PROGRESS') statusClass = 'status-inprogress';
+                        if (exp.status === 'COMPLETED') statusClass = 'status-completed';
+
+                        const isLocked = exp.status === 'COMPLETED';
+                        
+                        // Add classes for styling
+                        if (isLocked) {
+                            row.classList.add('row-locked');
+                            row.title = "This experiment is finalized and locked.";
+                        } else {
+                            row.classList.add('row-clickable');
+                            row.title = "Click to open sandbox";
+                        }
 
                         row.innerHTML = \`
                             <td>\${exp.name}</td>
-                            <td>\${date}</td>
+                            <td style="font-size:0.85em">\${dateCreated}</td>
+                            <td style="font-size:0.85em">\${dateOpened}</td>
                             <td class="\${statusClass}">\${exp.status}</td>
-                            <td style="font-family: monospace; font-size: 0.9em; opacity: 0.8;">\${exp.path}</td>
                         \`;
                         
-                        row.addEventListener('click', () => {
-                             vscode.postMessage({ type: 'openFolder', path: exp.path });
-                        });
+                        // Only add click listener if NOT locked
+                        if (!isLocked) {
+                            row.addEventListener('click', () => {
+                                 vscode.postMessage({ type: 'openFolder', path: exp.path });
+                            });
+                        }
                         
                         tbody.appendChild(row);
                     });
