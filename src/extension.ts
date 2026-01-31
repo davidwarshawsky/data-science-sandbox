@@ -1,0 +1,287 @@
+import * as vscode from 'vscode';
+import * as fs from 'fs-extra';
+import * as path from 'path';
+import * as crypto from 'crypto';
+import * as cp from 'child_process';
+import * as util from 'util';
+
+import { DatabaseManager } from './db';
+import { DashboardProvider } from './dashboard';
+import { WelcomePanel } from './welcome';
+
+const exec = util.promisify(cp.exec);
+
+export async function activate(context: vscode.ExtensionContext) {
+    console.log('Immutable Regulatory Sandbox is active!');
+
+    // Show Welcome Page on first run
+    const hasSeenWelcome = context.globalState.get<boolean>('hasSeenWelcome');
+    if (!hasSeenWelcome) {
+        WelcomePanel.createOrShow(context.extensionUri);
+        context.globalState.update('hasSeenWelcome', true);
+    }
+
+    const db = new DatabaseManager();
+    try {
+        await db.init();
+    } catch (err) {
+        console.error('Failed to init DB', err);
+        vscode.window.showErrorMessage('Failed to initialize Experiment Registry.');
+    }
+
+    // Register Dashboard Provider
+    const provider = new DashboardProvider(context.extensionUri, db);
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(DashboardProvider.viewType, provider)
+    );
+
+    let createSandboxDisposable = vscode.commands.registerCommand('immutable.createSandbox', async () => {
+        // 1. Ask user for target directory
+        const folderUri = await vscode.window.showOpenDialog({
+            canSelectFiles: false,
+            canSelectFolders: true,
+            canSelectMany: false,
+            openLabel: 'Select Sandbox Location'
+        });
+
+        if (!folderUri || folderUri.length === 0) {
+            return;
+        }
+
+        const projectPath = folderUri[0].fsPath;
+        const projectName = path.basename(projectPath);
+
+        try {
+            // 2. Scaffold Directory Structure
+            await scaffoldProject(projectPath);
+
+            // 3. Register in DB
+            const id = crypto.randomUUID();
+            await db.insertExperiment(id, projectName, projectPath);
+            provider.refresh(); // Update UI
+
+            vscode.window.showInformationMessage(`Immutable Sandbox created at ${projectPath}`);
+
+            // Option to open the folder
+            const selection = await vscode.window.showInformationMessage('Open Sandbox?', 'Yes', 'No');
+            if (selection === 'Yes') {
+                vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(projectPath));
+            }
+
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to create sandbox: ${error.message}`);
+        }
+    });
+
+    let finalizeDisposable = vscode.commands.registerCommand('immutable.finalizeExperiment', async () => {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) {
+            vscode.window.showErrorMessage('No workspace open.');
+            return;
+        }
+        const rootPath = workspaceFolders[0].uri.fsPath;
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Finalizing Experiment...",
+            cancellable: false
+        }, async (progress) => {
+            try {
+                // 1. Calculate Hashes
+                progress.report({ message: "Hashing Input..." });
+                const inputHashes = await hashDirectory(path.join(rootPath, 'input'));
+
+                progress.report({ message: "Hashing Output..." });
+                const outputHashes = await hashDirectory(path.join(rootPath, 'output'));
+
+                // 2. Snapshot Code
+                progress.report({ message: "Snapshotting Code..." });
+                const codeSnapshotDir = path.join(rootPath, '.provenance', 'code_snapshot');
+                await fs.ensureDir(codeSnapshotDir);
+                // Copy .py, .ipynb, .R files
+                const codeFiles = await vscode.workspace.findFiles('**/*.{py,ipynb,R}', '**/node_modules/**');
+                for (const file of codeFiles) {
+                    const dest = path.join(codeSnapshotDir, path.basename(file.fsPath));
+                    await fs.copy(file.fsPath, dest);
+                }
+
+                // 3. Generate Manifest
+                progress.report({ message: "Generating Manifest..." });
+                const manifest = {
+                    timestamp: new Date().toISOString(),
+                    input_hashes: inputHashes,
+                    output_hashes: outputHashes,
+                    system_info: "Docker Image ID would be here (requires docker socket access or env var)",
+                    pip_freeze: "To be implemented: read from .venv or internal shell trace"
+                };
+
+                const manifestPath = path.join(rootPath, 'manifest.json');
+                await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+                // 4. Sign Manifest (GPG)
+                progress.report({ message: "Signing with GPG..." });
+                try {
+                    await exec(`gpg --detach-sign --armor "${manifestPath}"`);
+                } catch (gpgError) {
+                    throw new Error("GPG Signing failed. Is GPG installed and configured? " + gpgError);
+                }
+
+                // 5. Timestamp (FreeTSA)
+                progress.report({ message: "Timestamping..." });
+                try {
+                    // Create query
+                    const tsqPath = path.join(rootPath, 'manifest.tsq');
+                    const tsrPath = path.join(rootPath, 'manifest.tsr');
+                    await exec(`openssl ts -query -data "${manifestPath}" -sha256 -out "${tsqPath}"`);
+
+                    // Send to FreeTSA
+                    await exec(`curl -H "Content-Type: application/timestamp-query" --data-binary @"${tsqPath}" https://freetsa.org/tsr -o "${tsrPath}"`);
+
+                    // Cleanup
+                    await fs.remove(tsqPath);
+                } catch (tsError) {
+                    vscode.window.showWarningMessage("Timestamping failed (network issue?): " + tsError);
+                }
+
+                // 6. Update DB
+                await db.finalizeExperiment(rootPath, manifestPath);
+                provider.refresh();
+
+                vscode.window.showInformationMessage(`Experiment Finalized! Manifest: ${manifestPath}`);
+
+            } catch (error: any) {
+                vscode.window.showErrorMessage(`Finalization failed: ${error.message}`);
+            }
+        });
+    });
+
+    let showDashboardDisposable = vscode.commands.registerCommand('immutable.showDashboard', async () => {
+        await vscode.commands.executeCommand('immutable.dashboardView.focus');
+    });
+
+    let showWelcomeDisposable = vscode.commands.registerCommand('immutable.showWelcome', () => {
+        WelcomePanel.createOrShow(context.extensionUri);
+    });
+
+    context.subscriptions.push(createSandboxDisposable);
+    context.subscriptions.push(finalizeDisposable);
+    context.subscriptions.push(showDashboardDisposable);
+    context.subscriptions.push(showWelcomeDisposable);
+}
+
+export function deactivate() { }
+
+// --- Helper Functions ---
+
+async function scaffoldProject(rootPath: string) {
+    // Define paths
+    const inputDir = path.join(rootPath, 'input');
+    const outputDir = path.join(rootPath, 'output');
+    const devContainerDir = path.join(rootPath, '.devcontainer');
+    const requirementsFile = path.join(rootPath, 'requirements.txt');
+
+    // Create directories
+    await fs.ensureDir(inputDir);
+    await fs.ensureDir(outputDir);
+    await fs.ensureDir(devContainerDir);
+
+    // Create placeholder files
+    if (!fs.existsSync(requirementsFile)) {
+        await fs.writeFile(requirementsFile, '# Add your dependencies here\npandas\nnumpy\n');
+    }
+
+    await fs.writeFile(path.join(inputDir, 'README.md'), 'Place your raw data here. This folder will be READ-ONLY inside the container.');
+    await fs.writeFile(path.join(outputDir, 'README.md'), 'Write your results here. This is the only writeable directory for results.');
+
+    // Create Dev Container Configs
+    await createDevContainerConfig(devContainerDir);
+}
+
+async function createDevContainerConfig(dir: string) {
+    const devcontainerJson = {
+        "name": "Immutable Data Science Box",
+        "build": {
+            "dockerfile": "Dockerfile"
+        },
+        "customizations": {
+            "vscode": {
+                "settings": {
+                    "python.defaultInterpreterPath": "/workspace/.venv/bin/python"
+                },
+                "extensions": [
+                    "ms-python.python"
+                ]
+            }
+        },
+        "mounts": [
+            // CRITICAL: Read-Only Input Mount
+            "source=${localWorkspaceFolder}/input,target=/workspace/input,type=bind,consistency=cached,readonly",
+            // Output Mount
+            "source=${localWorkspaceFolder}/output,target=/workspace/output,type=bind"
+        ],
+        "postCreateCommand": "bash .devcontainer/post-create.sh",
+        "remoteUser": "vscode"
+    };
+
+    const dockerfileContent = `
+FROM mcr.microsoft.com/devcontainers/python:3.10-bullseye
+
+# Install basic utils (gpg for signing if needed inside, though we prefer host signing)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gnupg2 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Ensure workspace ownership
+RUN chown -R vscode:vscode /workspace
+`;
+
+    const postCreateContent = `#!/bin/bash
+set -e
+
+# Create venv if not exists
+if [ ! -d ".venv" ]; then
+    python3 -m venv .venv
+fi
+
+# Activate and install
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Create initial hashes (if input exists)
+echo "Calculating input hashes..."
+# This would be where we do the "Black Box" logic start
+`;
+
+    // Write files
+    await fs.writeJson(path.join(dir, 'devcontainer.json'), devcontainerJson, { spaces: 4 });
+    await fs.writeFile(path.join(dir, 'Dockerfile'), dockerfileContent.trim());
+    await fs.writeFile(path.join(dir, 'post-create.sh'), postCreateContent);
+}
+
+async function hashDirectory(dir: string): Promise<Record<string, string>> {
+    const hashes: Record<string, string> = {};
+    if (!fs.existsSync(dir)) return hashes;
+
+    const files = await fs.readdir(dir);
+    for (const file of files) {
+        // Skip hidden files/dirs
+        if (file.startsWith('.')) continue;
+
+        const filePath = path.join(dir, file);
+        const stat = await fs.stat(filePath);
+        if (stat.isFile()) {
+            hashes[file] = await calculateFileHash(filePath);
+        }
+    }
+    return hashes;
+}
+
+async function calculateFileHash(filePath: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash('sha256');
+        const stream = fs.createReadStream(filePath);
+        stream.on('error', (err: Error) => reject(err));
+        stream.on('data', (chunk: any) => hash.update(chunk));
+        stream.on('end', () => resolve(hash.digest('hex')));
+    });
+}
