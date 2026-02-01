@@ -4,6 +4,11 @@
   "displayName": "Immutable Regulatory Sandbox",
   "description": "Trust-minimized environment for reproducible data science experiments.",
   "version": "0.0.1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/davidwarshawsky/data-science-sandbox"
+  },
   "engines": {
     "vscode": "^1.96.0"
   },
