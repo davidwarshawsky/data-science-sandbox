@@ -228,17 +228,41 @@ export async function activate(context: vscode.ExtensionContext) {
     let deleteSandboxDisposable = vscode.commands.registerCommand('immutable.deleteSandbox', async (pathToDelete: string) => {
         if (!pathToDelete) return;
 
-        const selection = await vscode.window.showWarningMessage(
-            `Remove '${path.basename(pathToDelete)}' from the Dashboard?`,
-            { modal: true, detail: "This will remove the experiment record from the registry. The files on disk will NOT be deleted." },
-            'Remove'
-        );
+        const config = vscode.workspace.getConfiguration('immutable');
+        const confirmDelete = config.get<boolean>('confirmDelete', true);
 
-        if (selection === 'Remove') {
-            await db.deleteExperiment(pathToDelete);
-            provider.refresh();
-            vscode.window.showInformationMessage('Experiment removed.');
+        if (confirmDelete) {
+            const result = await vscode.window.showWarningMessage(
+                `Remove '${path.basename(pathToDelete)}' from the Dashboard?`,
+                { modal: true, detail: "This will remove the experiment record from the registry. The files on disk will NOT be deleted." },
+                'Yes, Remove',
+                'Back up then Remove',
+                "Don't ask again"
+            );
+
+            if (!result) return; // Cancelled
+
+            if (result === "Don't ask again") {
+                await config.update('confirmDelete', false, vscode.ConfigurationTarget.Global);
+                // Proceed to delete since they clicked "Don't ask again" implying "Just do it"
+            }
+
+            if (result === 'Back up then Remove') {
+                const parentDir = path.dirname(pathToDelete);
+                const backupPath = path.join(parentDir, `${path.basename(pathToDelete)}_backup_${Date.now()}`);
+                try {
+                    await fs.copy(pathToDelete, backupPath);
+                    vscode.window.showInformationMessage(`Backup created at: ${backupPath}`);
+                } catch (e: any) {
+                    vscode.window.showErrorMessage(`Backup failed: ${e.message}`);
+                    return; // Abort delete if backup fails
+                }
+            }
         }
+
+        await db.deleteExperiment(pathToDelete);
+        provider.refresh();
+        vscode.window.showInformationMessage('Experiment removed.');
     });
 
     context.subscriptions.push(createSandboxDisposable);

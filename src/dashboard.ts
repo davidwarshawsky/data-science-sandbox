@@ -259,7 +259,7 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
                                 <span class="exp-name">\${exp.name}</span>
                                 <div style="display:flex; align-items:center; gap:5px;">
                                     <span class="badge \${badgeClass}">\${exp.status}</span>
-                                    \${!isAuditorMode ? \`<span onclick="deleteExp('\${exp.path}')" style="cursor:pointer; opacity:0.5;" title="Remove from Registry">🗑️</span>\` : ''}
+                                    \${!isAuditorMode ? \`<span onclick="event.stopPropagation(); deleteExp('\${exp.path}')" style="cursor:pointer; opacity:0.5;" title="Remove from Registry">🗑️</span>\` : ''}
                                 </div>
                             </div>
                             <div class="exp-date">Created: \${dateStr}</div>
