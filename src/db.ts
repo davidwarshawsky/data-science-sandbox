@@ -31,10 +31,13 @@ export class DatabaseManager {
             this.db = new sqlite3.Database(this.dbPath, (err) => {
                 if (err) return reject(err);
 
-                // RESET SCHEMA for Lifecycle Update (MVP approach: drop & recreate)
-                const dropSql = `DROP TABLE IF EXISTS experiments`;
+                if (this.db) {
+                    this.db.run('PRAGMA journal_mode = WAL;'); // Improves concurrency
+                }
+
+                // Create table if not exists (preserves existing data)
                 const createSql = `
-                    CREATE TABLE experiments (
+                    CREATE TABLE IF NOT EXISTS experiments (
                         id TEXT PRIMARY KEY,
                         name TEXT NOT NULL,
                         path TEXT NOT NULL,
@@ -50,13 +53,9 @@ export class DatabaseManager {
                     return reject(new Error("DB instance lost"));
                 }
 
-                this.db.serialize(() => {
-                    if (!this.db) return;
-                    this.db.run(dropSql);
-                    this.db.run(createSql, (err) => {
-                        if (err) reject(err);
-                        else resolve();
-                    });
+                this.db.run(createSql, (err) => {
+                    if (err) reject(err);
+                    else resolve();
                 });
             });
         });

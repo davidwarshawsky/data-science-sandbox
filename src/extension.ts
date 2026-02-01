@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import * as os from 'os';
 import * as crypto from 'crypto';
 import * as cp from 'child_process';
 import * as util from 'util';
@@ -143,6 +144,16 @@ export async function activate(context: vscode.ExtensionContext) {
                 progress.report({ message: "Hashing Output..." });
                 const outputHashes = await hashDirectory(path.join(rootPath, 'output'));
 
+                // 1b. Capture Environment (Pip Freeze)
+                progress.report({ message: "Capturing Environment..." });
+                let pipFreeze = "";
+                try {
+                    const { stdout } = await exec('pip freeze', { cwd: rootPath });
+                    pipFreeze = stdout;
+                } catch (e: any) {
+                    pipFreeze = "Error capturing pip freeze: " + e.message;
+                }
+
                 // 2. Snapshot Code
                 progress.report({ message: "Snapshotting Code..." });
                 const codeSnapshotDir = path.join(rootPath, '.provenance', 'code_snapshot');
@@ -161,7 +172,7 @@ export async function activate(context: vscode.ExtensionContext) {
                     input_hashes: inputHashes,
                     output_hashes: outputHashes,
                     system_info: "Docker Image ID would be here (requires docker socket access or env var)",
-                    pip_freeze: "To be implemented: read from .venv or internal shell trace"
+                    pip_freeze: pipFreeze
                 };
 
                 const manifestPath = path.join(rootPath, 'manifest.json');
@@ -170,9 +181,11 @@ export async function activate(context: vscode.ExtensionContext) {
                 // 4. Sign Manifest (GPG)
                 progress.report({ message: "Signing with GPG..." });
                 try {
-                    await exec(`gpg --detach-sign --armor "${manifestPath}"`);
+                    const keyId = await getOrGenerateKey();
+                    // Use the specific key
+                    await exec(`gpg --default-key "${keyId}" --detach-sign --armor "${manifestPath}"`);
                 } catch (gpgError) {
-                    throw new Error("GPG Signing failed. Is GPG installed and configured? " + gpgError);
+                    throw new Error("GPG Signing failed. " + gpgError);
                 }
 
                 // 5. Timestamp (FreeTSA)
@@ -241,7 +254,7 @@ async function scaffoldProject(rootPath: string, inputSourcePath: string) {
 
     // Create placeholder files
     if (!fs.existsSync(requirementsFile)) {
-        await fs.writeFile(requirementsFile, '# Add your dependencies here\npandas\nnumpy\n');
+        await fs.writeFile(requirementsFile, '# Add your dependencies here\npandas\nnumpy\nipykernel\n');
     }
 
     if (!fs.existsSync(path.join(inputDir, 'README.md'))) {
@@ -340,4 +353,74 @@ async function calculateFileHash(filePath: string): Promise<string> {
         stream.on('data', (chunk: any) => hash.update(chunk));
         stream.on('end', () => resolve(hash.digest('hex')));
     });
+}
+
+async function getOrGenerateKey(): Promise<string> {
+    const config = vscode.workspace.getConfiguration('immutable');
+    let keyId = config.get<string>('gpgKeyId');
+
+    if (keyId && keyId.trim() !== '') {
+        return keyId;
+    }
+
+    // No key set, check GPG list
+    try {
+        const { stdout } = await exec('gpg --list-secret-keys --with-colons');
+        // Look for 'sec' lines. format: sec:u:2048:1:9E98BC...
+        const lines = stdout.split('\n');
+        for (const line of lines) {
+            if (line.startsWith('sec')) {
+                const parts = line.split(':');
+                if (parts.length > 4) {
+                    keyId = parts[4]; // The Key ID is usually here
+                    // Update config
+                    await config.update('gpgKeyId', keyId, vscode.ConfigurationTarget.Global);
+                    return keyId;
+                }
+            }
+        }
+    } catch (e) {
+        // ignore, proceed to generate
+    }
+
+    // Generate Key
+    vscode.window.showInformationMessage("Creating 'Immutable Sandbox' GPG Identity...");
+
+    const batchConfig = `
+Key-Type: RSA
+Key-Length: 4096
+Name-Real: Immutable Sandbox User
+Name-Email: sandbox@localhost
+Expire-Date: 0
+%no-protection
+%commit
+`;
+    const batchPath = path.join(os.tmpdir(), 'gpg_batch_gen');
+    await fs.writeFile(batchPath, batchConfig);
+
+    try {
+        const { stderr } = await exec(`gpg --batch --gen-key "${batchPath}"`);
+        // Extract key from stderr output like "gpg: key 12345678 marked as ultimately trusted"
+        // Or re-list
+        const { stdout } = await exec('gpg --list-secret-keys --with-colons');
+        const lines = stdout.split('\n');
+        for (const line of lines) {
+            if (line.startsWith('sec')) {
+                const parts = line.split(':');
+                if (parts.length > 4) {
+                    // Just grab the first one if we just generated it (simplistic but works for MVP)
+                    keyId = parts[4];
+                }
+            }
+        }
+    } finally {
+        fs.remove(batchPath).catch(() => { });
+    }
+
+    if (keyId) {
+        await config.update('gpgKeyId', keyId, vscode.ConfigurationTarget.Global);
+        return keyId;
+    }
+
+    throw new Error("Could not generate or find a GPG key.");
 }

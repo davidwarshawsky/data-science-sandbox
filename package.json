@@ -20,6 +20,16 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Immutable Sandbox",
+      "properties": {
+        "immutable.gpgKeyId": {
+          "type": "string",
+          "default": "",
+          "description": "The GPG Key ID to use for signing manifests. If empty, one will be generated."
+        }
+      }
+    },
     "commands": [
       {
         "command": "immutable.createSandbox",
