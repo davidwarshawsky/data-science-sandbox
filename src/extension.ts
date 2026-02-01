@@ -225,10 +225,27 @@ export async function activate(context: vscode.ExtensionContext) {
         WelcomePanel.createOrShow(context.extensionUri);
     });
 
+    let deleteSandboxDisposable = vscode.commands.registerCommand('immutable.deleteSandbox', async (pathToDelete: string) => {
+        if (!pathToDelete) return;
+
+        const selection = await vscode.window.showWarningMessage(
+            `Remove '${path.basename(pathToDelete)}' from the Dashboard?`,
+            { modal: true, detail: "This will remove the experiment record from the registry. The files on disk will NOT be deleted." },
+            'Remove'
+        );
+
+        if (selection === 'Remove') {
+            await db.deleteExperiment(pathToDelete);
+            provider.refresh();
+            vscode.window.showInformationMessage('Experiment removed.');
+        }
+    });
+
     context.subscriptions.push(createSandboxDisposable);
     context.subscriptions.push(finalizeDisposable);
     context.subscriptions.push(showDashboardDisposable);
     context.subscriptions.push(showWelcomeDisposable);
+    context.subscriptions.push(deleteSandboxDisposable);
     context.subscriptions.push(
         vscode.commands.registerCommand('immutable.verifyIntegrity', async () => {
             const workspaceFolders = vscode.workspace.workspaceFolders;

@@ -142,6 +142,17 @@ export class DatabaseManager {
         });
     }
 
+    public deleteExperiment(path: string): Promise<void> {
+        return new Promise((resolve, reject) => {
+            if (!this.db) return reject(new Error('DB not initialized'));
+            const sql = `DELETE FROM experiments WHERE path = ?`;
+            this.db.run(sql, [path], (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+    }
+
     public close(): void {
         if (this.db) {
             this.db.close();

@@ -38,6 +38,9 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
                 case 'verify': // Manual Verify Button
                     vscode.commands.executeCommand('immutable.verifyIntegrity');
                     break;
+                case 'deleteSandbox':
+                    vscode.commands.executeCommand('immutable.deleteSandbox', data.path);
+                    break;
                 case 'openFolder':
                     if (data.path) {
                         try {
@@ -254,7 +257,10 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
                         let html = \`
                             <div class="card-header">
                                 <span class="exp-name">\${exp.name}</span>
-                                <span class="badge \${badgeClass}">\${exp.status}</span>
+                                <div style="display:flex; align-items:center; gap:5px;">
+                                    <span class="badge \${badgeClass}">\${exp.status}</span>
+                                    \${!isAuditorMode ? \`<span onclick="deleteExp('\${exp.path}')" style="cursor:pointer; opacity:0.5;" title="Remove from Registry">🗑️</span>\` : ''}
+                                </div>
                             </div>
                             <div class="exp-date">Created: \${dateStr}</div>
                         \`;
@@ -300,6 +306,10 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
                 // Expose helper functions to global scope for inline onclicks
                 window.openExp = (path) => {
                     vscode.postMessage({ type: 'openFolder', path: path });
+                };
+
+                window.deleteExp = (path) => {
+                    vscode.postMessage({ type: 'deleteSandbox', path: path });
                 };
                 
                 window.verify = (path) => {
