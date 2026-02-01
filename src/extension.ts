@@ -229,6 +229,84 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(finalizeDisposable);
     context.subscriptions.push(showDashboardDisposable);
     context.subscriptions.push(showWelcomeDisposable);
+    context.subscriptions.push(
+        vscode.commands.registerCommand('immutable.verifyIntegrity', async () => {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (!workspaceFolders) {
+                vscode.window.showErrorMessage('No workspace open.');
+                return;
+            }
+            const rootPath = workspaceFolders[0].uri.fsPath;
+            const manifestPath = path.join(rootPath, 'manifest.json');
+            const manifestSigPath = path.join(rootPath, 'manifest.json.asc');
+
+            if (!fs.existsSync(manifestPath)) {
+                vscode.window.showErrorMessage('No manifest.json found. Has this experiment been finalized?');
+                return;
+            }
+
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: "Verifying Integrity...",
+                cancellable: false
+            }, async (progress) => {
+                try {
+                    const manifest = await fs.readJson(manifestPath);
+                    const report: string[] = [];
+                    let allValid = true;
+
+                    // 1. Verify Inputs
+                    progress.report({ message: "Verifying Inputs..." });
+                    const currentInputHashes = await hashDirectory(path.join(rootPath, 'input'));
+                    const inputMatch = compareHashes(manifest.input_hashes, currentInputHashes);
+                    if (inputMatch.valid) {
+                        report.push("✅ Inputs Match");
+                    } else {
+                        allValid = false;
+                        report.push(`❌ Inputs Mismatch: ${inputMatch.errors.join(', ')}`);
+                    }
+
+                    // 2. Verify Outputs
+                    progress.report({ message: "Verifying Outputs..." });
+                    const currentOutputHashes = await hashDirectory(path.join(rootPath, 'output'));
+                    const outputMatch = compareHashes(manifest.output_hashes, currentOutputHashes);
+                    if (outputMatch.valid) {
+                        report.push("✅ Outputs Match");
+                    } else {
+                        allValid = false;
+                        report.push(`❌ Outputs Mismatch: ${outputMatch.errors.join(', ')}`);
+                    }
+
+                    // 3. Verify Signature
+                    progress.report({ message: "Verifying Signature..." });
+                    if (fs.existsSync(manifestSigPath)) {
+                        try {
+                            // Verify the detached signature
+                            await exec(`gpg --verify "${manifestSigPath}" "${manifestPath}"`);
+                            report.push("✅ Signature Valid");
+                        } catch (e) {
+                            allValid = false;
+                            report.push("❌ Signature Invalid or Key Missing");
+                        }
+                    } else {
+                        allValid = false;
+                        report.push("❌ Signature Missing (manifest.json.asc)");
+                    }
+
+                    // Show Report
+                    const message = report.join(' | ');
+                    if (allValid) {
+                        vscode.window.showInformationMessage(`Integrity Verified! ${message}`);
+                    } else {
+                        vscode.window.showErrorMessage(`Integrity Verification Failed! ${message}`);
+                    }
+
+                } catch (err: any) {
+                    vscode.window.showErrorMessage(`Verification failed: ${err.message}`);
+                }
+            });
+        })
+    );
 }
 
 export function deactivate() { }
@@ -423,4 +501,30 @@ Expire-Date: 0
     }
 
     throw new Error("Could not generate or find a GPG key.");
+}
+
+function compareHashes(manifestHashes: Record<string, string>, currentHashes: Record<string, string>): { valid: boolean; errors: string[] } {
+    const errors: string[] = [];
+    const manifestKeys = Object.keys(manifestHashes);
+    const currentKeys = Object.keys(currentHashes);
+
+    // Check for missing files
+    for (const key of manifestKeys) {
+        if (!currentHashes[key]) {
+            errors.push(`Missing file: ${key}`);
+            continue;
+        }
+        if (currentHashes[key] !== manifestHashes[key]) {
+            errors.push(`Hash mismatch: ${key}`);
+        }
+    }
+
+    // Check for extra files (strict mode)
+    for (const key of currentKeys) {
+        if (!manifestHashes[key]) {
+            errors.push(`Extra file found: ${key}`);
+        }
+    }
+
+    return { valid: errors.length === 0, errors };
 }

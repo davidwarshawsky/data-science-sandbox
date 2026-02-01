@@ -36,7 +36,7 @@ The **Immutable Regulatory Sandbox** is a VS Code extension that enforces a **se
    - SHA-256 hashes of all output files
    - A snapshot of the code used
    - Environment state (`pip freeze`)
-   - A **GPG signature** from the analyst
+   - A **GPG signature** from the analyst (auto-generated if no key exists)
    - An **RFC 3161 timestamp** from a public Timestamping Authority (FreeTSA)
 
 3. **One Experiment, One Directory**  
@@ -181,15 +181,6 @@ code --install-extension immutable-regulatory-sandbox-0.0.1.vsix
 - **Government agencies** requiring reproducible statistics
 - **Research labs** publishing pre-registered studies
 - **Any team** that needs to answer: *"Can you prove this result wasn't tampered with?"*
-
----
-
-## Roadmap
-
-- [ ] Remote attestation (hardware-backed trust)
-- [ ] Blockchain anchoring of manifests
-- [ ] Multi-user signing (co-analyst signatures)
-- [ ] Integration with regulatory submission portals
 
 ---
 

@@ -46,6 +46,10 @@
       {
         "command": "immutable.showWelcome",
         "title": "Immutable: Show Welcome Guide"
+      },
+      {
+        "command": "immutable.verifyIntegrity",
+        "title": "Immutable: Verify Sandbox Integrity"
       }
     ],
     "viewsContainers": {
