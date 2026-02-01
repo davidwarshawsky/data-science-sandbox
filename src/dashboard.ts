@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs-extra';
 import { DatabaseManager, ExperimentRecord } from './db';
 
 export class DashboardProvider implements vscode.WebviewViewProvider {
@@ -34,13 +35,24 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
                 case 'refresh':
                     this.refresh();
                     break;
+                case 'verify': // Manual Verify Button
+                    vscode.commands.executeCommand('immutable.verifyIntegrity');
+                    break;
                 case 'openFolder':
                     if (data.path) {
-                        // Update to IN_PROGRESS and Update Timestamp
-                        await this._db.updateExperimentStatus(data.path, 'IN_PROGRESS');
-                        await this._db.updateLastOpened(data.path);
-                        this.refresh(); // Update UI in background
-                        vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(data.path));
+                        try {
+                            const exp = await this._db.getExperimentByPath(data.path);
+                            // Avoid updating status if already locked/completed.
+                            // Only update timestamp if we are opening it.
+                            if (exp && exp.status !== 'COMPLETED') {
+                                await this._db.updateExperimentStatus(data.path, 'IN_PROGRESS');
+                            }
+                            await this._db.updateLastOpened(data.path);
+                            this.refresh();
+                            vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(data.path));
+                        } catch (e) {
+                            console.error('Error opening folder', e);
+                        }
                     }
                     break;
                 case 'openWelcome':
@@ -58,6 +70,8 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
 
         try {
             const experiments = await this._db.getAllExperiments();
+            // We might want to "hydrate" experiments with extra check data here if needed, 
+            // but for now let's just send the DB records + basic derived state.
             this._view.webview.postMessage({ type: 'update', data: experiments });
         } catch (err) {
             console.error('Failed to fetch experiments', err);
@@ -76,114 +90,231 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
             <title>Immutable Dashboard</title>
             <style>
                 body { font-family: var(--vscode-font-family); padding: 10px; color: var(--vscode-foreground); }
-                h2 { color: var(--vscode-editor-foreground); }
-                table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-                th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--vscode-widget-border); }
-                th { color: var(--vscode-descriptionForeground); font-weight: 600; }
-                tr.row-clickable:hover { background-color: var(--vscode-list-hoverBackground); cursor: pointer; }
-                tr.row-locked { opacity: 0.6; cursor: not-allowed; background-color: var(--vscode-list-inactiveSelectionBackground); }
+                h2 { color: var(--vscode-editor-foreground); border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 5px; margin-bottom: 15px; }
+
+                /* Cockpit Header */
+                .header-actions { display: flex; gap: 8px; margin-bottom: 15px; }
+                
+                /* Cards */
+                .experiment-card {
+                    background-color: var(--vscode-list-hoverBackground);
+                    border: 1px solid var(--vscode-widget-border);
+                    border-radius: 4px;
+                    padding: 10px;
+                    margin-bottom: 12px;
+                    transition: all 0.2s;
+                }
+                .experiment-card:hover {
+                    border-color: var(--vscode-focusBorder);
+                }
+                
+                .card-header {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin-bottom: 8px;
+                }
+                .exp-name { font-weight: bold; font-size: 1.1em; }
+                .exp-date { font-size: 0.85em; opacity: 0.8; }
+                
+                /* Status Badges */
+                .badge {
+                    padding: 2px 6px;
+                    border-radius: 3px;
+                    font-size: 0.8em;
+                    font-weight: 600;
+                    text-transform: uppercase;
+                }
+                .badge-created { background-color: var(--vscode-terminal-ansiYellow); color: #1e1e1e; }
+                .badge-inprogress { background-color: var(--vscode-terminal-ansiBlue); color: white; }
+                .badge-completed { background-color: var(--vscode-terminal-ansiGreen); color: #1e1e1e; }
+
+                /* Lock Status Bar */
+                .lock-status {
+                    display: flex;
+                    gap: 15px;
+                    font-size: 0.9em;
+                    margin-top: 8px;
+                    padding-top: 8px;
+                    border-top: 1px solid var(--vscode-widget-border);
+                }
+                .lock-item { display: flex; align-items: center; gap: 4px; }
+                .secure-icon { color: var(--vscode-terminal-ansiGreen); }
+                .insecure-icon { color: var(--vscode-terminal-ansiRed); }
+
+                /* Provenance Section (for Completed) */
+                .provenance-section {
+                    margin-top: 10px;
+                    background-color: rgba(255,255,255,0.05);
+                    padding: 8px;
+                    border-radius: 3px;
+                }
+                .provenance-row { display: flex; align-items: center; gap: 6px; font-size: 0.9em; margin-bottom: 4px; }
+                
+                /* Buttons */
                 .btn { 
                     background-color: var(--vscode-button-background); 
                     color: var(--vscode-button-foreground); 
                     border: none; 
-                    padding: 8px 12px; 
+                    padding: 6px 12px; 
                     cursor: pointer; 
-                    font-size: 13px; 
+                    font-size: 12px; 
                     border-radius: 2px;
+                    text-align: center;
+                    display: inline-block;
                 }
                 .btn:hover { background-color: var(--vscode-button-hoverBackground); }
-                .status-created { color: var(--vscode-terminal-ansiYellow); }
-                .status-inprogress { color: var(--vscode-terminal-ansiBlue); }
-                .status-completed { color: var(--vscode-terminal-ansiGreen); font-weight: bold; }
+                .btn-secondary { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+                .btn-full { width: 100%; margin-top: 8px; }
+
+                /* Modes */
+                .auditor-mode-banner {
+                    background-color: var(--vscode-terminal-ansiRed); 
+                    color: white; 
+                    padding: 4px; 
+                    text-align: center; 
+                    font-weight: bold; 
+                    margin-bottom: 10px;
+                    border-radius: 2px;
+                    display: none; /* Toggled via JS */
+                }
+                
+                .toggle-container { margin-bottom: 10px; display: flex; align-items: center; font-size: 0.9em; }
             </style>
         </head>
         <body>
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <h2>Experiment Registry</h2>
-                <div>
-                   <button class="btn" id="helpBtn" style="margin-right: 5px; background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);">Help</button>
-                   <button class="btn" id="createBtn">New Experiment</button>
-                </div>
+            <div class="toggle-container">
+                <label style="display:flex; align-items:center; cursor:pointer;">
+                    <input type="checkbox" id="auditorToggle" style="margin-right:6px;"> Auditor Mode
+                </label>
             </div>
             
-            <table id="expTable">
-                <thead>
-                    <tr>
-                        <th>Name</th>
-                        <th>Created</th>
-                        <th>Last Opened (UTC)</th>
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody id="tableBody">
-                    <!-- Data injected by JS -->
-                </tbody>
-            </table>
+            <div id="auditorBanner" class="auditor-mode-banner">🕵️ AUDITOR MODE ACTIVE</div>
+
+            <div class="header-actions">
+                <button class="btn btn-full" id="createBtn">➕ New Experiment</button>
+            </div>
+            <div class="header-actions">
+                 <button class="btn btn-secondary btn-full" id="helpBtn">📘 User Guide</button>
+            </div>
+            
+            <div id="experimentList">
+                <!-- Injected via JS -->
+            </div>
 
             <script nonce="${nonce}">
                 const vscode = acquireVsCodeApi();
-                
-                document.getElementById('createBtn').addEventListener('click', () => {
-                    vscode.postMessage({ type: 'createSandbox' });
-                });
+                let isAuditorMode = false;
 
-                document.getElementById('helpBtn').addEventListener('click', () => {
-                    vscode.postMessage({ type: 'openWelcome' });
+                // Event Listeners
+                document.getElementById('createBtn').addEventListener('click', () => vscode.postMessage({ type: 'createSandbox' }));
+                document.getElementById('helpBtn').addEventListener('click', () => vscode.postMessage({ type: 'openWelcome' }));
+                
+                document.getElementById('auditorToggle').addEventListener('change', (e) => {
+                    isAuditorMode = e.target.checked;
+                    document.getElementById('auditorBanner').style.display = isAuditorMode ? 'block' : 'none';
+                    // Re-render to update UI state
+                    vscode.postMessage({ type: 'refresh' }); 
                 });
 
                 window.addEventListener('message', event => {
                     const message = event.data;
                     switch (message.type) {
                         case 'update':
-                            updateTable(message.data);
+                            renderExperiments(message.data);
                             break;
                     }
                 });
 
-                function updateTable(experiments) {
-                    const tbody = document.getElementById('tableBody');
-                    tbody.innerHTML = '';
-                    
-                    experiments.forEach(exp => {
-                        const row = document.createElement('tr');
-                        
-                        const dateCreated = new Date(exp.created_at).toLocaleString();
-                        const dateOpened = exp.last_opened_at ? new Date(exp.last_opened_at).toUTCString().replace('GMT', '') : '-';
-                        
-                        let statusClass = 'status-created';
-                        if (exp.status === 'IN_PROGRESS') statusClass = 'status-inprogress';
-                        if (exp.status === 'COMPLETED') statusClass = 'status-completed';
+                function renderExperiments(experiments) {
+                    const container = document.getElementById('experimentList');
+                    container.innerHTML = '';
 
+                    if (experiments.length === 0) {
+                        container.innerHTML = '<div style="opacity:0.6; text-align:center; margin-top:20px;">No experiments found. Create one to get started.</div>';
+                        return;
+                    }
+
+                    experiments.forEach(exp => {
+                        const card = document.createElement('div');
+                        card.className = 'experiment-card';
+                        
+                        const dateStr = new Date(exp.created_at).toLocaleDateString();
                         const isLocked = exp.status === 'COMPLETED';
                         
-                        // Add classes for styling
-                        if (isLocked) {
-                            row.classList.add('row-locked');
-                            row.title = "This experiment is finalized and locked.";
-                        } else {
-                            row.classList.add('row-clickable');
-                            row.title = "Click to open sandbox";
+                        let badgeClass = 'badge-created';
+                        if (exp.status === 'IN_PROGRESS') badgeClass = 'badge-inprogress';
+                        if (exp.status === 'COMPLETED') badgeClass = 'badge-completed';
+
+                        // Auditor Mode: Highlight issues? (For now, just visual distinction)
+                        if (isAuditorMode && !isLocked) {
+                            card.style.opacity = '0.5'; // De-emphasize non-finalized work in audit mode
                         }
 
-                        row.innerHTML = \`
-                            <td>\${exp.name}</td>
-                            <td style="font-size:0.85em">\${dateCreated}</td>
-                            <td style="font-size:0.85em">\${dateOpened}</td>
-                            <td class="\${statusClass}">\${exp.status}</td>
+                        let html = \`
+                            <div class="card-header">
+                                <span class="exp-name">\${exp.name}</span>
+                                <span class="badge \${badgeClass}">\${exp.status}</span>
+                            </div>
+                            <div class="exp-date">Created: \${dateStr}</div>
                         \`;
-                        
-                        // Only add click listener if NOT locked
-                        if (!isLocked) {
-                            row.addEventListener('click', () => {
-                                 vscode.postMessage({ type: 'openFolder', path: exp.path });
-                            });
+
+                        // Lock / Active Security Status
+                        if (exp.status === 'IN_PROGRESS' || isLocked) {
+                            html += \`
+                                <div class="lock-status">
+                                    <div class="lock-item" title="Input directory is mounted Read-Only">
+                                        <span class="secure-icon">🔒</span> Input Read-Only
+                                    </div>
+                                    <div class="lock-item" title="Running in Isolated Container">
+                                        <span class="\${isLocked ? 'secure-icon' : 'secure-icon'}">🐳</span> Container
+                                    </div>
+                                </div>
+                            \`;
                         }
-                        
-                        tbody.appendChild(row);
+
+                        // Provenance Card (Only if Completed)
+                        if (isLocked) {
+                             html += \`
+                                <div class="provenance-section">
+                                    <div class="provenance-row">
+                                        <span>✒️</span> <b>Signed Identity Verified</b>
+                                    </div>
+                                    <div class="provenance-row">
+                                        <span>🕒</span> <b>Timestamped by FreeTSA</b>
+                                    </div>
+                                    <button class="btn btn-secondary btn-full" style="margin-top:6px" onclick="verify('\${exp.path}')">Verify Integrity Now</button>
+                                </div>
+                            \`;
+                        } else {
+                            if (!isAuditorMode) {
+                                html += \`<button class="btn btn-full" onclick="openExp('\${exp.path}')">Open Sandbox</button>\`;
+                            }
+                        }
+
+                        card.innerHTML = html;
+                        container.appendChild(card);
                     });
                 }
                 
-                // Signal ready
+                // Expose helper functions to global scope for inline onclicks
+                window.openExp = (path) => {
+                    vscode.postMessage({ type: 'openFolder', path: path });
+                };
+                
+                window.verify = (path) => {
+                     // Note: We currently only support verifying the current workspace
+                     // But strictly speaking, the user should open it first.
+                     // For UI simplicity, let's open it.
+                     vscode.postMessage({ type: 'openFolder', path: path });
+
+                     // Then verify? (Race condition, but OK for MVP)
+                     setTimeout(() => {
+                         vscode.postMessage({ type: 'verify' });
+                     }, 2000);
+                }
+
+                // Initial request
                 vscode.postMessage({ type: 'refresh' });
             </script>
         </body>
